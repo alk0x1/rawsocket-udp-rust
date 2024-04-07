@@ -1,15 +1,18 @@
 use std::collections::HashSet;
-use std::io::{self, Write};
+use std::io::{self};
 use std::net::UdpSocket;
 use std::str;
 
 fn main() -> io::Result<()> {
-    println!("Enter the server address (e.g., 127.0.0.1:8083):");
-    let mut server_address = String::new();
-    io::stdin().read_line(&mut server_address)?;
-    let server_address = server_address.trim();
+    // println!("Enter the server address (e.g., 127.0.0.1:8083):");
+    // let mut server_address = String::new();
+    // io::stdin().read_line(&mut server_address)?;
+    // let server_address = server_address.trim();
+    // println!("server_address: {}", server_address);
 
+    let server_address = String::from("127.0.0.1:8083");
     let client = UdpSocket::bind("0.0.0.0:0")?;
+
     client.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
 
     let mut received_chunks = HashSet::new();
@@ -28,7 +31,7 @@ fn main() -> io::Result<()> {
             } else {
                 format!("@{}:{}/{}", server_address, server_address, filename_or_command)
             };
-            client.send_to(request.as_bytes(), server_address)?;
+            client.send_to(request.as_bytes(), server_address.clone())?;
         }
 
         let mut buf = [0; 1500];

@@ -1,6 +1,7 @@
+use std::env;
 use std::fs::File;
-use std::io::{self, Read};
-use std::net::{UdpSocket, SocketAddr};
+use std::io::{self, Read, Error};
+use std::net::{SocketAddr, UdpSocket};
 
 struct UdpPacket {
   src_port: u16, // Porta de origem, 16 bits
@@ -11,17 +12,51 @@ struct UdpPacket {
 }
 
 impl UdpPacket {
-   fn new(src_port: u16, dst_port: u16, data: Vec<u8>) -> UdpPacket {
-        let length = (8 + data.len()) as u16; // O cabeçalho UDP tem 8 bytes
-        UdpPacket {
-            src_port,
-            dst_port,
-            length,
-            checksum: 0, // Inicialmente definido como 0, pode ser calculado depois
-            data,
-        }
+  fn new(src_port: u16, dst_port: u16, data: Vec<u8>, length: u16, checksum: u16, ) -> UdpPacket {
+    let length = (8 + data.len()) as u16; // O cabeçalho UDP tem 8 bytes
+    UdpPacket {
+      src_port,
+      dst_port,
+      length,
+      checksum: 0, // Inicialmente definido como 0, pode ser calculado depois
+      data,
     }
+  }
+  fn serialize(&self) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&self.src_port.to_be_bytes());
+    bytes.extend_from_slice(&self.dst_port.to_be_bytes());
+    bytes.extend_from_slice(&self.length.to_be_bytes());
+    bytes.extend_from_slice(&self.checksum.to_be_bytes());
+    bytes.extend(self.data.clone());
 
+    bytes
+  }
+  fn prepare_packets(src_port: u16, dst_port: u16, data: Vec<u8>) -> Vec<UdpPacket> {
+    data.chunks(1472).map(|chunk| {
+      let checksum = UdpPacket::calculate_checksum(chunk);
+      // O comprimento é o tamanho dos dados + tamanho do cabeçalho UDP (8 bytes)
+      let length = chunk.len() as u16 + 8; // Adicione 8 para incluir o cabeçalho UDP se necessário
+      UdpPacket::new(src_port, dst_port, chunk.to_vec(), length, checksum)
+    }).collect()
+  }
+
+
+  fn calculate_checksum(data: &[u8]) -> u16 {
+    let sum: u32 = data
+      .chunks(2)
+      .fold(0, |acc, chunk| {
+        let word = chunk
+          .iter()
+          .enumerate()
+          .fold(0u16, |word_acc, (i, &byte)| word_acc | ((byte as u16) << ((1 - i) * 8)));
+        acc + word as u32
+      });
+
+    let wrapped_sum = (sum & 0xFFFF) + (sum >> 16);
+    let wrapped_sum = (wrapped_sum & 0xFFFF) + (wrapped_sum >> 16); // Wrap around again if necessary
+    !wrapped_sum as u16
+  }
 }
 
 
@@ -37,52 +72,45 @@ fn main() -> io::Result<()> {
     let (size, client_address) = socket.recv_from(&mut buf)?;
     let request = std::str::from_utf8(&buf[..size]).unwrap_or_default();
     println!("request: {}", request);
-
-    // Parse Request
+    
     if request.starts_with("GET /") {
       let filename = &request[5..].trim();
+      let data = get_file_data(filename).expect("Error getting file data");
+      let packets = UdpPacket::prepare_packets(8083, client_address.port(), data);
 
-      match send_file(&socket, filename, &client_address) {
-        Ok(_) => println!("File sent"),
-        Err(e) => eprintln!("Error sending file '{}': {}", filename, e),
+      for packet in packets {
+        send_packet(&socket, packet, client_address).expect("Error sending the packet...");
       }
+
     }
+   
   }
 }
 
-fn send_file(socket: &UdpSocket, filename: &str, client_address: &SocketAddr) -> io::Result<()> {
-  let path = format!("/home/aces/Desktop/projects/rawsocket-udp-rust/src/files/{}", filename);
+fn send_packet(socket: &UdpSocket, packet: UdpPacket, destination: SocketAddr) -> io::Result<()> {
+  let packet_bytes = packet.serialize();
 
-  match File::open(&path) {
-    Ok(mut file) => {
-      let mut chunk_number = 0;
-      let mut buffer = [0u8; 1400]; // Adjusting for MTU - headers
+  socket.send_to(&packet_bytes, destination).unwrap();
 
-      while let Ok(bytes_read) = file.read(&mut buffer) {
-        if bytes_read == 0 {
-          break;
-        }
-
-        // Simulating a simple checksum as an example; in a real case, you should calculate based on the data
-        let checksum = bytes_read as u32 % 256;
-        let chunk_header = format!("{:04}:{:04}:{:04}:", chunk_number, bytes_read, checksum);
-        let mut packet = chunk_header.as_bytes().to_vec();
-        packet.extend_from_slice(&buffer[..bytes_read]);
-        println!("checksum: {}", checksum);
-        println!("chunk_header: {}", chunk_header);
-        println!("packet: {:?}", packet);
-
-        socket.send_to(&packet, client_address)?;
-        chunk_number += 1;
-      }
-
-      // Indicating end of file
-      socket.send_to(b"EOF", client_address)?;
-    }
-    Err(_) => {
-      // Informing the client that the file was not found
-      socket.send_to(b"ERR: File Not Found", client_address)?;
-    }
-  }
   Ok(())
+}
+
+fn get_file_data(filename: &str) -> Result<Vec<u8>, Error> {
+  // Obtém o caminho executável atual
+  let exe_path = env::current_exe()?;
+  let exe_dir = exe_path.parent().ok_or(io::Error::new(io::ErrorKind::Other, "Falha ao obter o diretório do executável"))?;
+  let files_dir = exe_dir.join("../../src/files");
+  println!("Caminho para o diretório 'files': {}", files_dir.display());
+
+  // Constrói o caminho completo para o arquivo
+  let path = files_dir.join(filename); // Usa `join` para evitar problemas com espaços
+
+  // Abre o arquivo
+  let mut file = File::open(path)?;
+
+  // Lê os dados do arquivo
+  let mut data = Vec::new();
+  file.read_to_end(&mut data)?;
+
+  Ok(data)
 }

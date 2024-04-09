@@ -22,6 +22,7 @@ impl UdpPacket {
       data,
     }
   }
+
   fn serialize(&self) -> Vec<u8> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&self.src_port.to_be_bytes());
@@ -32,6 +33,7 @@ impl UdpPacket {
 
     bytes
   }
+
   fn prepare_packets(src_port: u16, dst_port: u16, data: Vec<u8>) -> Vec<UdpPacket> {
     data.chunks(1472).map(|chunk| {
       let checksum = UdpPacket::calculate_checksum(chunk);
@@ -40,7 +42,6 @@ impl UdpPacket {
       UdpPacket::new(src_port, dst_port, chunk.to_vec(), length, checksum)
     }).collect()
   }
-
 
   fn calculate_checksum(data: &[u8]) -> u16 {
     let sum: u32 = data

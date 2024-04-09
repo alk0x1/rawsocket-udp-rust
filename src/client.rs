@@ -1,89 +1,76 @@
-use std::collections::HashSet;
-use std::io::{self};
+use std::io::{self, stdin, Write};
 use std::net::UdpSocket;
-use std::str;
+use std::{env, fs, str};
+use std::time::Duration;
+use std::fs::File;
 
 fn main() -> io::Result<()> {
-    // println!("Enter the server address (e.g., 127.0.0.1:8083):");
-    // let mut server_address = String::new();
-    // io::stdin().read_line(&mut server_address)?;
-    // let server_address = server_address.trim();
-    // println!("server_address: {}", server_address);
+	println!("Enter the server IP address and port (e.g., '127.0.0.1:8083'):");
+	let server_addr = read_input()?;
+	
+	println!("Enter the name of the file to retrieve from the server:");
+	let filename = read_input()?;
+	
+	let message = format!("GET /{}", filename);
+	let socket = UdpSocket::bind("0.0.0.0:0")?;
+	socket.set_read_timeout(Some(Duration::from_secs(5)))?;
+	
+	send_request(&socket, &server_addr, &message)?;
+	
+	let data_received = receive_response(&socket)?;
 
-    let server_address = String::from("127.0.0.1:8083");
-    let client = UdpSocket::bind("0.0.0.0:0")?;
-
-    client.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
-
-    let mut received_chunks = HashSet::new();
-    let mut last_chunk_received = false;
-    let mut file_data: Vec<u8> = Vec::new();
-
-    loop {
-        if !last_chunk_received {
-            println!("Enter the filename to request or 'RESEND' to request missing chunks:");
-            let mut filename_or_command = String::new();
-            io::stdin().read_line(&mut filename_or_command)?;
-            let filename_or_command = filename_or_command.trim();
-
-            let request = if filename_or_command.to_uppercase() == "RESEND" {
-                format!("RESEND") // This would include logic to specify which chunks are missing
-            } else {
-                format!("@{}:{}/{}", server_address, server_address, filename_or_command)
-            };
-            client.send_to(request.as_bytes(), server_address.clone())?;
-        }
-
-        let mut buf = [0; 1500];
-        match client.recv_from(&mut buf) {
-            Ok((amt, src)) => {
-                if src.to_string() == server_address {
-                    let data = &buf[..amt];
-                    if data.starts_with(b"EOF") {
-                        println!("End of file reached.");
-                        last_chunk_received = true;
-                        continue;
-                    } else if data.starts_with(b"ERR:") {
-                        println!("Error: {}", str::from_utf8(&data[4..]).unwrap_or("Unknown error"));
-                        return Ok(());
-                    }
-
-                    let chunk_number = parse_chunk_number(data); // Implement this based on your protocol
-                    if received_chunks.contains(&chunk_number) {
-                        continue; // Skip duplicate chunks
-                    }
-
-                    println!("Received chunk {}. Keep it? (Y/n):", chunk_number);
-                    let mut decision = String::new();
-                    io::stdin().read_line(&mut decision)?;
-                    if decision.trim().eq_ignore_ascii_case("n") {
-                        println!("Discarding chunk {}", chunk_number);
-                        continue; // Simulate the loss of this chunk
-                    }
-
-                    received_chunks.insert(chunk_number);
-                    file_data.extend_from_slice(&data); // Assume direct data addition for simplicity
-                }
-            },
-            Err(e) => {
-                println!("Timeout or error: {}", e);
-                if last_chunk_received {
-                    break;
-                }
-            },
-        }
-    }
-
-    // Placeholder for file content display or processing
-    println!("File received. Total chunks: {}", received_chunks.len());
-    println!("Received file content: {}", String::from_utf8_lossy(&file_data));
-
-    Ok(())
+	let file_path = format!("{}.txt", filename); // Define o nome do arquivo baseado na entrada do usuário
+	write_to_file(&filename, &data_received)?;
+	
+	println!("Arquivo '{}' salvo com sucesso.", file_path);
+	
+	Ok(())
 }
 
-// Dummy implementation: extract chunk number from the data.
-// In a real scenario, this should parse the actual structure of your data packet to find the chunk number.
-fn parse_chunk_number(data: &[u8]) -> i32 {
-    // This is a placeholder. You'll need to replace this with logic that parses your chunk's metadata.
-    0
+fn read_input() -> io::Result<String> {
+    let mut input = String::new();
+    stdin().read_line(&mut input)?;
+    Ok(input.trim().to_string())
+}
+
+fn send_request(socket: &UdpSocket, server_addr: &str, message: &str) -> io::Result<()> {
+	socket.send_to(message.as_bytes(), server_addr)?;
+	Ok(())
+}
+
+fn receive_response(socket: &UdpSocket) -> io::Result<Vec<u8>> {
+    let mut data_received = Vec::new();
+    loop {
+        let mut buf = [0; 1472];
+        match socket.recv_from(&mut buf) {
+            Ok((size, _)) => {
+                if size == 0 { break; } // Condição de saída se nenhum dado for recebido
+                data_received.extend_from_slice(&buf[..size]);
+                if size < buf.len() {
+                    break; // Supondo que um pacote menor que o buffer sinalize o final dos dados
+                }
+            },
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                // Se o socket não receber dados dentro do período de timeout especificado
+                break;
+            },
+            Err(e) => return Err(e), // Propaga outros erros
+        }
+    }
+    Ok(data_received)
+}
+
+fn write_to_file(relative_path: &str, data: &[u8]) -> io::Result<()> {
+	let exe_path = env::current_exe()?;
+	let exe_dir = exe_path.parent().ok_or(io::Error::new(io::ErrorKind::Other, "Falha ao obter o diretório do executável"))?;
+	let files_dir = exe_dir.join("../../client_files");
+	
+	fs::create_dir_all(&files_dir)?;
+	
+	let file_path = files_dir.join(relative_path);
+
+	let mut file = File::create(file_path)?;
+	file.write_all(data)?;
+	
+	Ok(())
 }

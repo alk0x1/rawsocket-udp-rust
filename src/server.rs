@@ -13,12 +13,12 @@ struct UdpPacket {
 
 impl UdpPacket {
   fn new(src_port: u16, dst_port: u16, data: Vec<u8>, length: u16, checksum: u16, ) -> UdpPacket {
-    let length = (8 + data.len()) as u16; // O cabeçalho UDP tem 8 bytes
+    // let length = (8 + data.len()) as u16; // O cabeçalho UDP tem 8 bytes
     UdpPacket {
       src_port,
       dst_port,
       length,
-      checksum: 0, // Inicialmente definido como 0, pode ser calculado depois
+      checksum, // Inicialmente definido como 0, pode ser calculado depois
       data,
     }
   }

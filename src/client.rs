@@ -19,7 +19,7 @@ fn main() -> io::Result<()> {
 	
 	let data_received = receive_response(&socket)?;
 
-	let file_path = format!("{}.txt", filename); // Define o nome do arquivo baseado na entrada do usuário
+	let file_path = format!("{}", filename); // Define o nome do arquivo baseado na entrada do usuário
 	write_to_file(&filename, &data_received)?;
 	
 	println!("Arquivo '{}' salvo com sucesso.", file_path);
@@ -63,7 +63,7 @@ fn receive_response(socket: &UdpSocket) -> io::Result<Vec<u8>> {
 fn write_to_file(relative_path: &str, data: &[u8]) -> io::Result<()> {
 	let exe_path = env::current_exe()?;
 	let exe_dir = exe_path.parent().ok_or(io::Error::new(io::ErrorKind::Other, "Falha ao obter o diretório do executável"))?;
-	let files_dir = exe_dir.join("../../client_files");
+	let files_dir = exe_dir.join("../../src/client_files");
 	
 	fs::create_dir_all(&files_dir)?;
 	
@@ -73,4 +73,20 @@ fn write_to_file(relative_path: &str, data: &[u8]) -> io::Result<()> {
 	file.write_all(data)?;
 	
 	Ok(())
+}
+
+ fn calculate_checksum(data: &[u8]) -> u16 {
+	let sum: u32 = data
+		.chunks(2)
+		.fold(0, |acc, chunk| {
+			let word = chunk
+				.iter()
+				.enumerate()
+				.fold(0u16, |word_acc, (i, &byte)| word_acc | ((byte as u16) << ((1 - i) * 8)));
+			acc + word as u32
+		});
+
+	let wrapped_sum = (sum & 0xFFFF) + (sum >> 16);
+	let wrapped_sum = (wrapped_sum & 0xFFFF) + (wrapped_sum >> 16); // Wrap around again if necessary
+	!wrapped_sum as u16
 }

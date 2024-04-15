@@ -3,7 +3,10 @@ use std::fs::File;
 use std::io::{self, Read, Error};
 use std::net::{SocketAddr, UdpSocket};
 
+const END_OF_TRANSMISSION_SEQ_NUM: u32 = u32::MAX; // Usamos o valor máximo como sinalizador de final de transmissão.
+
 struct UdpPacket {
+  seq_number: u32,
   src_port: u16, // Porta de origem, 16 bits
   dst_port: u16, // Porta de destino, 16 bits
   length: u16,   // Comprimento do cabeçalho UDP + dados, 16 bits
@@ -12,9 +15,10 @@ struct UdpPacket {
 }
 
 impl UdpPacket {
-  fn new(src_port: u16, dst_port: u16, data: Vec<u8>, length: u16, checksum: u16, ) -> UdpPacket {
+  fn new(seq_number: u32, src_port: u16, dst_port: u16, data: Vec<u8>, length: u16, checksum: u16, ) -> UdpPacket {
     // let length = (8 + data.len()) as u16; // O cabeçalho UDP tem 8 bytes
     UdpPacket {
+      seq_number,
       src_port,
       dst_port,
       length,
@@ -25,6 +29,7 @@ impl UdpPacket {
 
   fn serialize(&self) -> Vec<u8> {
     let mut bytes = Vec::new();
+    bytes.extend_from_slice(&self.seq_number.to_be_bytes());
     bytes.extend_from_slice(&self.src_port.to_be_bytes());
     bytes.extend_from_slice(&self.dst_port.to_be_bytes());
     bytes.extend_from_slice(&self.length.to_be_bytes());
@@ -35,11 +40,12 @@ impl UdpPacket {
   }
 
   fn prepare_packets(src_port: u16, dst_port: u16, data: Vec<u8>) -> Vec<UdpPacket> {
-    data.chunks(1472).map(|chunk| {
+    data.chunks(1472).enumerate().map(|(index, chunk)| {
+      let seq_number = index as u32; // Usando o índice do chunk como número de sequência
       let checksum = UdpPacket::calculate_checksum(chunk);
       // O comprimento é o tamanho dos dados + tamanho do cabeçalho UDP (8 bytes)
       let length = chunk.len() as u16 + 8; // Adicione 8 para incluir o cabeçalho UDP se necessário
-      UdpPacket::new(src_port, dst_port, chunk.to_vec(), length, checksum)
+      UdpPacket::new(seq_number, src_port, dst_port, chunk.to_vec(), length, checksum)
     }).collect()
   }
 
@@ -83,6 +89,8 @@ fn main() -> io::Result<()> {
         send_packet(&socket, packet, client_address).expect("Error sending the packet...");
       }
 
+      send_end_of_transmission_packet(&socket, client_address)?;
+
     }
    
   }
@@ -92,6 +100,22 @@ fn send_packet(socket: &UdpSocket, packet: UdpPacket, destination: SocketAddr) -
   let packet_bytes = packet.serialize();
 
   socket.send_to(&packet_bytes, destination).unwrap();
+
+  Ok(())
+}
+
+fn send_end_of_transmission_packet(socket: &UdpSocket, destination: SocketAddr) -> io::Result<()> {
+  let end_packet = UdpPacket::new(
+    END_OF_TRANSMISSION_SEQ_NUM,
+    8083,
+    destination.port(),
+    Vec::new(), // Sem dados para o pacote de encerramento.
+    8,          // Comprimento apenas do cabeçalho UDP, sem dados.
+    0,          // Checksum pode ser zero, já que não há dados.
+  );
+
+  let packet_bytes = end_packet.serialize();
+  socket.send_to(&packet_bytes, destination)?;
 
   Ok(())
 }

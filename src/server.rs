@@ -85,7 +85,7 @@ impl UdpPacket {
 
 // Função principal que configura e executa o servidor UDP.
 fn main() -> io::Result<()> {
-  let socket = UdpSocket::bind("127.0.0.1:8083")?;
+  let socket = UdpSocket::bind("0.0.0.0:8083")?;
   println!("Escutando em 127.0.0.1:8083...");
 
   loop {

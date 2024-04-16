@@ -167,14 +167,21 @@ fn handle_retransmission_request(socket: &UdpSocket, request: &str, client_addre
                                   .filter_map(|s| s.parse::<u32>().ok())
                                   .collect();
 
+  let mut retransmitted_any = false;
+
   for seq_number in sequences {
       println!("Checking for packet sequence: {}", seq_number);  // Debugging output
       if let Some(packet) = get_packet_for_sequence(seq_number) {
           println!("Retransmitting packet for sequence number: {}", seq_number); // Confirming function call
           send_packet(socket, packet, client_address)?;
+          retransmitted_any = true;
       } else {
           println!("No packet found for sequence number: {}", seq_number);
       }
+  }
+  
+  if retransmitted_any {
+    send_end_of_transmission_packet(socket, client_address)?;
   }
 
   Ok(())

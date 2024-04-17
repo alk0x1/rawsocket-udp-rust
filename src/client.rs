@@ -66,7 +66,7 @@ fn main() -> io::Result<()> {
                 }
 
                 total_packets = calculate_expected_number_of_packets(&received_seq_numbers) - 1;        
-                let mut missing_packets = identify_missing_packets(&received_seq_numbers, 6895);
+                let mut missing_packets = identify_missing_packets(&received_seq_numbers, received_total_packets); // 6888 para teste
                 missing_packets.retain(|&x| x != 0);
                 println!("Missing packets: {:?}", missing_packets);
                 println!("Total packets expected: {}", total_packets);

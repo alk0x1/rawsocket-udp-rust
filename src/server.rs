@@ -1,19 +1,22 @@
-use std::env;
+use std::{env, fs};
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, BufReader, BufWriter, Read};
 use std::net::{SocketAddr, UdpSocket};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use serde::{Deserialize, Serialize};
+
 // Constante para indicar o número de sequência de fim de transmissão.
 const END_OF_TRANSMISSION_SEQ_NUM: u32 = u32::MAX;
+const TMP_PATH: &str = "D:\\Desktop\\TI\\projetos\\rawsocket-udp-rust\\src\\packets.tmp";
 
 // Macro para uso de variáveis estáticas.
 #[macro_use]
 extern crate lazy_static;
 
 // Estrutura que representa um pacote UDP.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct UdpPacket {
   seq_number: u32,
   src_port: u16,
@@ -26,6 +29,20 @@ struct UdpPacket {
 // Armazenamento estático para pacotes, usando um Mutex para acesso seguro entre threads.
 lazy_static! {
   static ref PACKETS_STORAGE: Mutex<HashMap<u32, UdpPacket>> = Mutex::new(HashMap::new());
+}
+
+fn save_packets_to_file(packets: &HashMap<u32, UdpPacket>) -> io::Result<()> {
+  let file = File::create(TMP_PATH).expect("error creating temporary file");
+  let writer = BufWriter::new(file);
+  serde_json::to_writer(writer, packets)?;
+  Ok(())
+}
+
+fn load_packets_from_file(filepath: &str) -> io::Result<HashMap<u32, UdpPacket>> {
+  let file = File::open(filepath)?;
+  let reader = BufReader::new(file);
+  let packets = serde_json::from_reader(reader)?;
+  Ok(packets)
 }
 
 // Implementação de métodos para a estrutura UdpPacket.
@@ -56,17 +73,24 @@ impl UdpPacket {
   }
 
   // Método para preparar pacotes a partir de dados brutos.
-  fn prepare_packets(src_port: u16, dst_port: u16, data: Vec<u8>) -> Vec<UdpPacket> {
-    data.chunks(1472).enumerate().map(|(index, chunk)| {
-      let seq_number = index as u32;
-      let checksum = UdpPacket::calculate_checksum(chunk);
-      let length = chunk.len() as u16 + 8;
-      UdpPacket::new(seq_number, src_port, dst_port, chunk.to_vec(), length, checksum)
-    }).collect()
-  }
+fn prepare_packets(src_port: u16, dst_port: u16, data: Vec<u8>) -> Vec<UdpPacket> {
+    let total_packets = (data.len() as f32 / 1472.0).ceil() as u32 + 1; // +1 para incluir o pacote de cabeçalho
+    let mut packets = Vec::new();
 
+    // Primeiro pacote com o total de pacotes
+    packets.push(UdpPacket::new(0, src_port, dst_port, total_packets.to_be_bytes().to_vec(), 8, 0));
+
+    // Demais pacotes com os dados
+    for (index, chunk) in data.chunks(1472).enumerate() {
+        let seq_number = index as u32 + 1; // Começando de 1 porque 0 é o cabeçalho
+        let checksum = UdpPacket::calculate_checksum(chunk);
+        let length = chunk.len() as u16 + 8;
+        packets.push(UdpPacket::new(seq_number, src_port, dst_port, chunk.to_vec(), length, checksum));
+    }
+    packets
+}
   // Método para calcular o checksum de um bloco de dados.
-  fn calculate_checksum(data: &[u8]) -> u16 {
+fn calculate_checksum(data: &[u8]) -> u16 {
     let sum: u32 = data
       .chunks(2)
       .fold(0, |acc, chunk| {
@@ -88,6 +112,8 @@ fn main() -> io::Result<()> {
   let socket = UdpSocket::bind("0.0.0.0:8083")?;
   println!("Escutando em 127.0.0.1:8083...");
 
+  *PACKETS_STORAGE.lock().unwrap() = load_packets_from_file(TMP_PATH).unwrap_or_else(|_| HashMap::new());
+
   loop {
     let mut buf = [0u8; 2048];
     let (size, client_address) = socket.recv_from(&mut buf)?;
@@ -95,30 +121,65 @@ fn main() -> io::Result<()> {
     println!("Requisição: {}", request);
     
     if request.starts_with("GET /") {
-      let filename = &request[5..].trim();
-      match get_file_data(filename) {
-          Ok(data) => {
-              let packets = UdpPacket::prepare_packets(8083, client_address.port(), data);
-              for packet in packets {
-                  send_packet(&socket, packet, client_address).expect("Error sending packet...");
-              }
-              send_end_of_transmission_packet(&socket, client_address)?;
-          },
-          Err(e) if e.kind() == io::ErrorKind::NotFound => {
-              println!("File not found: {}", filename);
-              send_error_message(&socket, "Arquivo não encontrado", client_address)?;
-          },
-          Err(e) => {
-              println!("Error reading file: {}", e);
-              send_error_message(&socket, &format!("Erro Ao ler o arquivo: {}", e), client_address)?;
-          }
-        }
+      handle_get_request(&socket, request, client_address).expect("Error in handle request");
     } else if request.starts_with("RETRANSMIT ") {
       println!("Tratando solicitação de retransmissão.");
       handle_retransmission_request(&socket, request, client_address)?;
+    } else {
+      println!("Requisição Inválida: {}", request);
+      // socket.send("Requisição Inválida", );
     }
   }
 }
+
+fn handle_get_request(socket: &UdpSocket, request: &str, client_address: SocketAddr) -> io::Result<()> {
+  // Dividindo a requisição em partes para análise
+  let parts: Vec<&str> = request.split_whitespace().collect();
+  if parts.len() < 2 {
+      return send_error_message(socket, "Requisição mal formatada", client_address);
+  }
+  let path = parts[1];
+
+  // Identificando a partir de qual pacote a transmissão deve começar, se especificado
+  let mut start_packet = 0;
+  if let Some(query_idx) = path.find("?start=") {
+      if let Ok(num) = path[query_idx + 7..].parse::<u32>() {
+          start_packet = num;
+      }
+  }
+
+  // Extraindo o nome do arquivo da URL, considerando que pode haver uma query string
+  let filename = if let Some(idx) = path.find('?') {
+      &path[1..idx]
+  } else {
+      &path[1..]
+  };
+
+  // Verificando se o nome do arquivo não está vazio
+  if filename.is_empty() {
+      return send_error_message(socket, "Nome do arquivo não especificado", client_address);
+  }
+
+  match get_file_data(filename) {
+      Ok(data) => {
+          let packets = UdpPacket::prepare_packets(8083, client_address.port(), data);
+          for packet in packets {
+              send_packet(&socket, packet, client_address)?;
+          }
+          send_end_of_transmission_packet(&socket, client_address)?;
+      },
+      Err(e) if e.kind() == io::ErrorKind::NotFound => {
+          println!("File not found: {}", filename);
+          send_error_message(&socket, "Arquivo não encontrado", client_address)?;
+      },
+      Err(e) => {
+          println!("Error reading file: {}", e);
+          send_error_message(&socket, &format!("Erro ao ler o arquivo: {}", e), client_address)?;
+      }
+  }
+  Ok(())
+}
+
 
 // Funções auxiliares para enviar pacotes, tratar requisições de retransmissão e acessar dados do arquivo.
 fn get_packet_for_sequence(seq_number: u32) -> Option<UdpPacket> {
@@ -132,7 +193,7 @@ fn send_packet(socket: &UdpSocket, packet: UdpPacket, destination: SocketAddr) -
 
   let mut packets = PACKETS_STORAGE.lock().unwrap();
   packets.insert(packet.seq_number, packet);
-
+  save_packets_to_file(&packets).expect("error creating tmp files");
   Ok(())
 }
 
@@ -148,7 +209,10 @@ fn send_end_of_transmission_packet(socket: &UdpSocket, destination: SocketAddr) 
 
   let packet_bytes = end_packet.serialize();
   socket.send_to(&packet_bytes, destination)?;
-
+  
+  if let Err(e) = fs::remove_file(TMP_PATH) {
+    println!("Failed to delete temporary file: {}", e);
+  }
   Ok(())
 }
 

@@ -66,11 +66,11 @@ fn main() -> io::Result<()> {
                 }
 
                 total_packets = calculate_expected_number_of_packets(&received_seq_numbers) - 1;        
-                let mut missing_packets = identify_missing_packets(&received_seq_numbers, total_packets);
+                let mut missing_packets = identify_missing_packets(&received_seq_numbers, 6895);
                 missing_packets.retain(|&x| x != 0);
                 println!("Missing packets: {:?}", missing_packets);
                 println!("Total packets expected: {}", total_packets);
-
+                println!("received_seq_numbers: {:?}", received_seq_numbers.len());
                 if missing_packets.is_empty() {
                     println!("All packets received. Proceeding to file writing.");
                     break; // The loop will only end when all packets have been received.

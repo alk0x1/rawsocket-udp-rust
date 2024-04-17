@@ -3,7 +3,8 @@ use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Read};
 use std::net::{SocketAddr, UdpSocket};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 use serde::{Deserialize, Serialize};
 
@@ -111,28 +112,36 @@ fn calculate_checksum(data: &[u8]) -> u16 {
 fn main() -> io::Result<()> {
   let socket = UdpSocket::bind("0.0.0.0:8083")?;
   println!("Escutando em 127.0.0.1:8083...");
+  let packets_storage = Arc::new(Mutex::new(load_packets_from_file(TMP_PATH).unwrap_or_else(|_| HashMap::new())));
 
   *PACKETS_STORAGE.lock().unwrap() = load_packets_from_file(TMP_PATH).unwrap_or_else(|_| HashMap::new());
 
   loop {
     let mut buf = [0u8; 2048];
     let (size, client_address) = socket.recv_from(&mut buf)?;
-    let request = std::str::from_utf8(&buf[..size]).unwrap_or_default();
-    println!("Requisição: {}", request);
-    
-    if request.starts_with("GET /") {
-      handle_get_request(&socket, request, client_address).expect("Error in handle request");
-    } else if request.starts_with("RETRANSMIT ") {
-      println!("Tratando solicitação de retransmissão.");
-      handle_retransmission_request(&socket, request, client_address)?;
-    } else {
-      println!("Requisição Inválida: {}", request);
-      // socket.send("Requisição Inválida", );
-    }
+    let request = std::str::from_utf8(&buf[..size]).unwrap_or_default().to_string();
+    let socket_clone = socket.try_clone()?;
+    let storage_clone = Arc::clone(&packets_storage);
+
+    thread::spawn(move || {
+      handle_client_request(socket_clone, client_address, request, storage_clone);
+    });  
   }
 }
 
-fn handle_get_request(socket: &UdpSocket, request: &str, client_address: SocketAddr) -> io::Result<()> {
+fn handle_client_request(socket: UdpSocket, client_address: SocketAddr, request: String, storage: Arc<Mutex<HashMap<u32, UdpPacket>>>) {
+  println!("Request: {}", request);
+  if request.starts_with("GET /") {
+      handle_get_request(&socket, &request, client_address, storage);
+  } else if request.starts_with("RETRANSMIT ") {
+      println!("Handling retransmission request.");
+      handle_retransmission_request(&socket, &request, client_address, storage);
+  } else {
+      println!("Invalid request: {}", request);
+  }
+}
+
+fn handle_get_request(socket: &UdpSocket, request: &str, client_address: SocketAddr, storage: Arc<Mutex<HashMap<u32, UdpPacket>>>) -> io::Result<()> {
   // Dividindo a requisição em partes para análise
   let parts: Vec<&str> = request.split_whitespace().collect();
   if parts.len() < 2 {
@@ -231,7 +240,7 @@ fn get_file_data(filename: &str) -> io::Result<Vec<u8>> {
     Ok(data)
 }
 
-fn handle_retransmission_request(socket: &UdpSocket, request: &str, client_address: SocketAddr) -> io::Result<()> {
+fn handle_retransmission_request(socket: &UdpSocket, request: &str, client_address: SocketAddr, storage: Arc<Mutex<HashMap<u32, UdpPacket>>>) -> io::Result<()> {
   let sequences: Vec<u32> = request.trim_start_matches("RETRANSMIT ")
                                   .split(',')
                                   .filter_map(|s| s.parse::<u32>().ok())

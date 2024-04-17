@@ -2,9 +2,15 @@ use std::env;
 use std::fs::File;
 use std::io::{self, Read, Error};
 use std::net::{SocketAddr, UdpSocket};
+use std::collections::HashMap;
+use std::sync::Mutex;
 
-const END_OF_TRANSMISSION_SEQ_NUM: u32 = u32::MAX; // Usamos o valor máximo como sinalizador de final de transmissão.
+const END_OF_TRANSMISSION_SEQ_NUM: u32 = u32::MAX;
 
+#[macro_use]
+extern crate lazy_static;
+
+#[derive(Clone)]
 struct UdpPacket {
   seq_number: u32,
   src_port: u16, // Porta de origem, 16 bits
@@ -12,6 +18,10 @@ struct UdpPacket {
   length: u16,   // Comprimento do cabeçalho UDP + dados, 16 bits
   checksum: u16, // Checksum, 16 bits (opcional, pode ser zero se não usado)
   data: Vec<u8>, // Dados do pacote, representado como um vetor de bytes
+}
+
+lazy_static! {
+  static ref PACKETS_STORAGE: Mutex<HashMap<u32, UdpPacket>> = Mutex::new(HashMap::new());
 }
 
 impl UdpPacket {
@@ -91,15 +101,26 @@ fn main() -> io::Result<()> {
 
       send_end_of_transmission_packet(&socket, client_address)?;
 
+    } else if request.starts_with("RETRANSMIT ") {
+      println!("Handling retransmission request.");
+      handle_retransmission_request(&socket, request, client_address)?;
     }
    
   }
 }
 
+fn get_packet_for_sequence(seq_number: u32) -> Option<UdpPacket> {
+  let packets = PACKETS_STORAGE.lock().unwrap();
+  packets.get(&seq_number).cloned()
+}
+
 fn send_packet(socket: &UdpSocket, packet: UdpPacket, destination: SocketAddr) -> io::Result<()> {
   let packet_bytes = packet.serialize();
-
   socket.send_to(&packet_bytes, destination).unwrap();
+
+
+  let mut packets = PACKETS_STORAGE.lock().unwrap();
+  packets.insert(packet.seq_number, packet);
 
   Ok(())
 }
@@ -138,4 +159,23 @@ fn get_file_data(filename: &str) -> Result<Vec<u8>, Error> {
   file.read_to_end(&mut data)?;
 
   Ok(data)
+}
+
+fn handle_retransmission_request(socket: &UdpSocket, request: &str, client_address: SocketAddr) -> io::Result<()> {
+  let sequences: Vec<u32> = request.trim_start_matches("RETRANSMIT ")
+                                  .split(',')
+                                  .filter_map(|s| s.parse::<u32>().ok())
+                                  .collect();
+
+  for seq_number in sequences {
+      println!("Checking for packet sequence: {}", seq_number);  // Debugging output
+      if let Some(packet) = get_packet_for_sequence(seq_number) {
+          println!("Retransmitting packet for sequence number: {}", seq_number); // Confirming function call
+          send_packet(socket, packet, client_address)?;
+      } else {
+          println!("No packet found for sequence number: {}", seq_number);
+      }
+  }
+
+  Ok(())
 }
